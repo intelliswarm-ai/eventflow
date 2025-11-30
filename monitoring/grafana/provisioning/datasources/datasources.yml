@@ -4,6 +4,7 @@ datasources:
   # PostgreSQL - Analytics Database
   - name: PostgreSQL-Analytics
     type: postgres
+    uid: postgres-analytics
     access: proxy
     url: postgres:5432
     database: analytics
