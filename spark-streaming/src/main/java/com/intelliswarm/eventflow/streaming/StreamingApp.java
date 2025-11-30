@@ -114,7 +114,7 @@ public class StreamingApp {
                 .add("productId", DataTypes.StringType)
                 .add("price", DataTypes.DoubleType)
                 .add("currency", DataTypes.StringType)
-                .add("timestamp", DataTypes.TimestampType);
+                .add("timestamp", DataTypes.DoubleType);  // Changed to Double to match Unix timestamp
 
         Dataset<Row> kafkaOrders = spark.readStream()
                 .format("kafka")
@@ -127,9 +127,15 @@ public class StreamingApp {
                 .selectExpr("CAST(value AS STRING) as json")
                 .select(from_json(col("json"), orderSchema).as("data"))
                 .select("data.*")
+                .withColumn("timestamp", expr("CAST(timestamp AS TIMESTAMP)"))  // Convert Unix timestamp to SQL timestamp
                 .withWatermark("timestamp", "10 minutes");
 
-        return orders.writeStream()
+        return orders
+                .drop("eventType")  // Drop eventType as it's not needed in the table
+                .withColumnRenamed("orderId", "order_id")
+                .withColumnRenamed("userId", "user_id")
+                .withColumnRenamed("productId", "product_id")
+                .writeStream()
                 .outputMode("append")
                 .foreachBatch((batchDF, batchId) -> {
                     if (batchDF.count() > 0) {
@@ -160,7 +166,7 @@ public class StreamingApp {
                 .add("productId", DataTypes.StringType)
                 .add("price", DataTypes.DoubleType)
                 .add("currency", DataTypes.StringType)
-                .add("timestamp", DataTypes.TimestampType);
+                .add("timestamp", DataTypes.DoubleType);  // Changed to Double to match Unix timestamp
 
         Dataset<Row> kafkaOrders = spark.readStream()
                 .format("kafka")
@@ -173,6 +179,7 @@ public class StreamingApp {
                 .selectExpr("CAST(value AS STRING) as json")
                 .select(from_json(col("json"), orderSchema).as("data"))
                 .select("data.*")
+                .withColumn("timestamp", expr("CAST(timestamp AS TIMESTAMP)"))  // Convert Unix timestamp to SQL timestamp
                 .withWatermark("timestamp", "10 minutes");
 
         Dataset<Row> revenueByWindow = orders
