@@ -1,0 +1,219 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    hostname: zookeeper
+    container_name: eventflow-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - eventflow-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    hostname: kafka
+    container_name: eventflow-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_DELETE_TOPIC_ENABLE: "true"
+      KAFKA_JMX_OPTS: "-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Djava.rmi.server.hostname=kafka -Dcom.sun.management.jmxremote.rmi.port=9999"
+      KAFKA_JMX_PORT: 9999
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+      - "9999:9999"
+    networks:
+      - eventflow-network
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - eventflow-network
+    command: >
+      bash -c "
+        echo 'Creating Kafka topics...'
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic user-events --partitions 3 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic product-view --partitions 3 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic orders --partitions 3 --replication-factor 1
+        echo 'Topics created successfully'
+        kafka-topics --bootstrap-server kafka:9092 --list
+      "
+
+  postgres:
+    image: postgres:16
+    hostname: postgres
+    container_name: eventflow-postgres
+    environment:
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: analytics
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    networks:
+      - eventflow-network
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analytics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  producer:
+    build:
+      context: .
+      dockerfile: producer/Dockerfile
+    container_name: eventflow-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EVENT_DELAY_MS: 100
+    networks:
+      - eventflow-network
+    restart: unless-stopped
+
+  spark-streaming:
+    build:
+      context: .
+      dockerfile: spark-streaming/Dockerfile
+    container_name: eventflow-spark-streaming
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      POSTGRES_URL: jdbc:postgresql://postgres:5432/analytics
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: secret
+    networks:
+      - eventflow-network
+    volumes:
+      - spark-checkpoint:/tmp/checkpoint
+    restart: unless-stopped
+
+  spark-batch:
+    build:
+      context: .
+      dockerfile: spark-batch/Dockerfile
+    container_name: eventflow-spark-batch
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_URL: jdbc:postgresql://postgres:5432/analytics
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: secret
+    networks:
+      - eventflow-network
+    profiles:
+      - batch
+    command: >
+      bash -c "
+        echo 'Waiting for data to accumulate...'
+        sleep 60
+        java -jar /app/spark-batch.jar
+      "
+
+  kafka-jmx-exporter:
+    build:
+      context: ./monitoring
+      dockerfile: Dockerfile.jmx-exporter
+    hostname: kafka-jmx-exporter
+    container_name: eventflow-kafka-jmx-exporter
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "5556:5556"
+    networks:
+      - eventflow-network
+    volumes:
+      - ./monitoring/jmx-exporter-config.yml:/etc/jmx-exporter/config.yml
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    hostname: prometheus
+    container_name: eventflow-prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - eventflow-network
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.2.2
+    hostname: grafana
+    container_name: eventflow-grafana
+    depends_on:
+      - prometheus
+      - postgres
+    ports:
+      - "3000:3000"
+    networks:
+      - eventflow-network
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    restart: unless-stopped
+
+networks:
+  eventflow-network:
+    driver: bridge
+
+volumes:
+  kafka-data:
+  postgres-data:
+  spark-checkpoint:
+  prometheus-data:
+  grafana-data:

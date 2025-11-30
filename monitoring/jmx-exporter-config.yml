@@ -1,0 +1,70 @@
+---
+# JMX Prometheus Exporter Configuration for Kafka
+# This configuration scrapes Kafka broker JMX metrics and exposes them for Prometheus
+
+hostPort: kafka:9999
+ssl: false
+
+# Lowercasing metric names for consistency
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+# Whitelist of ObjectNames to scrape
+whitelistObjectNames:
+  - "kafka.server:type=BrokerTopicMetrics,name=*"
+  - "kafka.server:type=ReplicaManager,name=*"
+  - "kafka.server:type=KafkaRequestHandlerPool,name=*"
+  - "kafka.network:type=RequestMetrics,name=*,request=*"
+  - "kafka.controller:type=KafkaController,name=*"
+  - "kafka.server:type=ReplicaFetcherManager,name=*,clientId=*"
+  - "kafka.server:type=Fetch,name=*"
+  - "kafka.log:type=LogFlushStats,name=*"
+  - "kafka.server:type=BrokerTopicMetrics,name=MessagesInPerSec"
+  - "kafka.server:type=BrokerTopicMetrics,name=BytesInPerSec"
+  - "kafka.server:type=BrokerTopicMetrics,name=BytesOutPerSec"
+
+# Rules to extract and transform metrics
+rules:
+  # Broker Topic Metrics
+  - pattern: kafka.server<type=(.+), name=(.+), topic=(.+)><>(.+)
+    name: kafka_server_$1_$2
+    type: GAUGE
+    labels:
+      topic: "$3"
+      metric: "$4"
+
+  # Request Metrics
+  - pattern: kafka.network<type=RequestMetrics, name=(.+), request=(.+)><>(.+)
+    name: kafka_network_requestmetrics_$1
+    type: GAUGE
+    labels:
+      request: "$2"
+      metric: "$3"
+
+  # Replica Manager Metrics
+  - pattern: kafka.server<type=ReplicaManager, name=(.+)><>(.+)
+    name: kafka_server_replicamanager_$1
+    type: GAUGE
+    labels:
+      metric: "$2"
+
+  # Generic Kafka Server Metrics
+  - pattern: kafka.server<type=(.+), name=(.+)><>(.+)
+    name: kafka_server_$1_$2
+    type: GAUGE
+    labels:
+      metric: "$3"
+
+  # Controller Metrics
+  - pattern: kafka.controller<type=KafkaController, name=(.+)><>(.+)
+    name: kafka_controller_kafkacontroller_$1
+    type: GAUGE
+    labels:
+      metric: "$2"
+
+  # Log Metrics
+  - pattern: kafka.log<type=LogFlushStats, name=(.+)><>(.+)
+    name: kafka_log_logflushstats_$1
+    type: GAUGE
+    labels:
+      metric: "$2"

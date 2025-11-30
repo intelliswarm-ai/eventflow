@@ -1,0 +1,28 @@
+apiVersion: 1
+
+datasources:
+  # PostgreSQL - Analytics Database
+  - name: PostgreSQL-Analytics
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: analytics
+    user: analytics
+    secureJsonData:
+      password: secret
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+    isDefault: true
+    editable: true
+
+  # Prometheus - Kafka Metrics
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: false
+    editable: true
+    jsonData:
+      timeInterval: 15s
